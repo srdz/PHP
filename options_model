@@ -1,0 +1,689 @@
+<?php
+
+if (!defined('BASEPATH'))
+    exit('No direct script access allowed');
+/*
+ * Description: Agency model class
+ */
+
+class Options_model extends CI_Model {
+
+    function __construct() {
+        parent::__construct();
+    }
+
+    public function get_onq_options($agency_id) {
+        if (!empty($agency_id)) {
+            $options = $this->db2->queryFirstRow('SELECT * FROM AGENCYINFO a LEFT JOIN ONQ_OPTIONS o ON a.agency_id = o.agency_id LEFT JOIN UTM_PROFILER_OPTIONS p ON p.agency_id = a.agency_id LEFT JOIN ONQ_MTCC_DOC_OPTIONS m ON m.agency_id = a.agency_id LEFT JOIN GDS_MASTER ON GDS_MASTER.gds_id = a.GDS_ID WHERE a.agency_id = %i', $agency_id);
+            
+            return $options;
+        }
+    }
+
+    public function get_onq_options_row($agency_id) {
+        $options = $this->db2->queryFirstRow('SELECT * FROM ONQ_OPTIONS WHERE agency_id = %i', $agency_id);
+
+        return $options;
+    }
+
+    public function get_onq_templates($agency_id, $template_id = 'all') {
+        if ($template_id === 'all') {
+            $templates = $this->db2->query('SELECT * FROM ONQ_TEMPLATES WHERE agency_id = %i', $agency_id);
+        } else {
+            $templates = $this->db2->queryFirstRow('SELECT * FROM ONQ_TEMPLATES WHERE template_id = %i', $template_id);
+        }
+        
+        return $templates;
+    }
+
+    public function save_onq_options($values) {
+        if (!empty($values['agency_id']) AND is_numeric($values['agency_id'])) {
+            $options = $this->db2->queryFirstRow('SELECT * FROM AGENCYINFO a LEFT JOIN ONQ_OPTIONS o ON a.agency_id = o.agency_id WHERE a.agency_id = %i', $values['agency_id']);
+            $values['modified_date'] = DB::sqlEval('NOW()');
+            $values['modified_by'] = $this->session->userdata('viewer_username');
+            
+            if($options['GDS_ID'] == 2) {
+                // put in default value for where it was left blank or new row
+                if(empty($values['account_number_gds_command']) && (isset($values['account_number_gds_command']) || empty($options['onq_options_id']))) {
+                    $values['account_number_gds_command'] = '*PDK';
+                }
+
+                if(empty($values['account_number_prefix_keyword']) && (isset($values['account_number_prefix_keyword']) || empty($options['account_number_prefix_keyword']))) {
+                    $values['account_number_prefix_keyword'] = 'CUSTOMER NUMBER -';
+                }
+            }
+
+            if (!empty($options)) {
+                if (!empty($options['onq_options_id'])) {
+                    // a row already exists for this agency. just update
+                    $this->db2->update('ONQ_OPTIONS', $values, 'pcc=%s', $options['SID']);
+                } else {
+                    // no existing row for this agency. insert a new one
+                    $values['access_db_agency_id'] = 0; // TODO
+                    $values['pcc'] = $options['SID'];
+                    $values['gds_id'] = $options['GDS_ID'];
+                    
+                    if (!isset($values['next_worklist_scan_time'])) {
+                        $values['next_worklist_scan_time'] = date('Y-m-d 02:00:00', strtotime('+1 week'));
+                    }
+
+                    if (!isset($values['next_utm_verify_scan_date'])) {
+                        $values['next_utm_verify_scan_date'] = date('Y-m-d 02:00:00', strtotime('+1 week'));
+                    }
+                    
+                    $this->db2->insert('ONQ_OPTIONS', $values);
+                }
+            }
+        }
+    }
+
+    public function save_onq_template($values) {
+        if (!empty($values['template_id'])) {
+            $this->db2->update('ONQ_TEMPLATES', $values, 'template_id=%i', $values['template_id']);
+            
+            return $values['template_id'];
+        } else {
+            $this->db2->insert('ONQ_TEMPLATES', $values);
+            
+            $template_id = $this->db2->insertId();
+            
+            if ($template_id) {
+                return $template_id;
+            }
+        }
+
+        return false;
+    }
+
+    public function delete_template($template_id) {
+        $this->db2->delete('ONQ_TEMPLATES', 'template_id=%i', $template_id);
+        
+        if ($this->db2->affectedRows()) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    public function get_safetogo_accounts($agency_id, $account_id = 'all') {
+        if ($account_id === 'all') {
+            $this->load->model('agency_model');
+            $this->agency_model->set_agency_id($agency_id);
+            
+            $sid = $this->agency_model->get_sid();
+            $accounts = $this->s2g_db->query('SELECT * FROM DD_AGENCY_CUSTOMER_ACCOUNTS WHERE pcc = %s', $sid);
+        } else {
+            $accounts = $this->s2g_db->queryFirstRow('SELECT * FROM DD_AGENCY_CUSTOMER_ACCOUNTS WHERE agency_account_id = %i', $account_id);
+        }
+
+        return $accounts;
+    }
+
+    public function save_safetogo_account($values) {
+        if (!empty($values['agency_account_id'])) {
+            $values['mod_date'] = DB::sqlEval('NOW()');
+            $values['mod_by'] = $this->session->userdata('viewer_username');
+        
+            $this->s2g_db->update('DD_AGENCY_CUSTOMER_ACCOUNTS', $values, 'agency_account_id=%i', $values['agency_account_id']);
+        
+            return $values['agency_account_id'];
+        } else {
+            $values['inserted_date'] = DB::sqlEval('NOW()');
+            $values['inserted_by'] = $this->session->userdata('viewer_username');
+        
+            $this->s2g_db->insert('DD_AGENCY_CUSTOMER_ACCOUNTS', $values);
+        
+            $account_id = $this->s2g_db->insertId();
+        
+            if ($account_id) {
+                return $account_id;
+            }
+        }
+        
+        return false;
+    }
+
+    public function delete_safetogo_account($account_id) {
+        $this->s2g_db->delete('DD_AGENCY_CUSTOMER_ACCOUNTS', 'agency_account_id=%i', $account_id);
+        
+        if ($this->s2g_db->affectedRows()) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    public function get_utm_vendor_interface_options($agency_id, $options_id = 'all') {
+        if ($options_id === 'all') {
+            $options = $this->db2->query('SELECT o.*, v.interface_short_name FROM UTM_VENDOR_INTERFACE_OPTIONS o JOIN VENDOR_INTERFACE v ON v.interface_id = o.interface_id WHERE agency_id = %i', $agency_id);
+        } else {
+            $options = $this->db2->queryFirstRow('SELECT o.*, v.interface_short_name FROM UTM_VENDOR_INTERFACE_OPTIONS o JOIN VENDOR_INTERFACE v ON v.interface_id = o.interface_id WHERE options_id = %i', $options_id);
+        }
+        
+        return $options;
+    }
+
+    public function get_vendor_interfaces() {
+        return $this->db2->query('SELECT * FROM VENDOR_INTERFACE');
+    }
+
+    public function save_utm_vendor_interface_options($values) {
+        if (!empty($values['options_id'])) {
+            $this->db2->update('UTM_VENDOR_INTERFACE_OPTIONS', $values, 'options_id=%i', $values['options_id']);
+            return $values['options_id'];
+        } else {
+            $this->db2->insert('UTM_VENDOR_INTERFACE_OPTIONS', $values);
+            $options_id = $this->db2->insertId();
+            if ($options_id) {
+                return $options_id;
+            }
+        }
+        
+        return false;
+    }
+
+    public function delete_utm_vendor_interface_options($options_id) {
+        $this->db2->delete('UTM_VENDOR_INTERFACE_OPTIONS', 'options_id=%i', $options_id);
+        
+        if ($this->db2->affectedRows()) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    public function get_utm_xml_feed_accounts($agency_id, $utm_xml_feed_id = 'all') {
+        if ($utm_xml_feed_id === 'all') {
+            $utm_xml_feeds = $this->db2->query('SELECT * FROM UTM_XML_FEED_ACCOUNTS WHERE agency_id = %i', $agency_id);
+        } else {
+            $utm_xml_feeds = $this->db2->queryFirstRow('SELECT * FROM UTM_XML_FEED_ACCOUNTS WHERE utm_xml_feed_id = %i', $utm_xml_feed_id);
+        }
+        
+        return $utm_xml_feeds;
+    }
+
+    public function save_utm_xml_feed_accounts($values) {
+        if (!empty($values['utm_xml_feed_id'])) {
+            $this->db2->update('UTM_XML_FEED_ACCOUNTS', $values, 'utm_xml_feed_id=%i', $values['utm_xml_feed_id']);
+        
+            return $values['utm_xml_feed_id'];
+        } else {
+            $this->db2->insert('UTM_XML_FEED_ACCOUNTS', $values);
+        
+            $utm_xml_feed_id = $this->db2->insertId();
+        
+            if ($utm_xml_feed_id) {
+                return $utm_xml_feed_id;
+            }
+        }
+        
+        return false;
+    }
+
+    public function delete_utm_xml_feed_accounts($utm_xml_feed_id) {
+        $this->db2->delete('UTM_XML_FEED_ACCOUNTS', 'utm_xml_feed_id=%i', $utm_xml_feed_id);
+        
+        if ($this->db2->affectedRows()) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    public function get_onq_pdf_accounts($agency_id, $pdf_id = 'all') {
+        if ($pdf_id === 'all') {
+            $pdf_accounts = $this->db2->query('SELECT * FROM ONQ_PDF_ACCOUNTS WHERE agency_id = %i', $agency_id);
+        } else {
+            $pdf_accounts = $this->db2->queryFirstRow('SELECT * FROM ONQ_PDF_ACCOUNTS WHERE pdf_id = %i', $pdf_id);
+        }
+
+        return $pdf_accounts;
+    }
+
+    public function save_onq_pdf_accounts($values) {
+        if (!empty($values['pdf_id'])) {
+            $this->db2->update('ONQ_PDF_ACCOUNTS', $values, 'pdf_id=%i', $values['pdf_id']);
+            
+            return $values['pdf_id'];
+        } else {
+            $this->db2->insert('ONQ_PDF_ACCOUNTS', $values);
+            
+            $pdf_id = $this->db2->insertId();
+            
+            if ($pdf_id) {
+                return $pdf_id;
+            }
+        }
+
+        return false;
+    }
+
+    public function delete_onq_pdf_account($pdf_id) {
+        $this->db2->delete('ONQ_PDF_ACCOUNTS', 'pdf_id=%i', $pdf_id);
+
+        if ($this->db2->affectedRows()) {
+            return true;
+        }
+        
+        return false;
+    }
+
+    public function get_profiler_options_row($agency_id) {
+        $profiler_options = $this->db2->queryFirstRow('SELECT * FROM UTM_PROFILER_OPTIONS WHERE agency_id = %i', $agency_id);
+        
+        return $profiler_options;
+    }
+
+    public function save_profiler_options($values) {
+        if (!empty($values['agency_id']) AND is_numeric($values['agency_id'])) {
+            $profiler_options = $this->db2->queryFirstRow('SELECT * FROM UTM_PROFILER_OPTIONS WHERE agency_id = %i', $values['agency_id']);
+            
+            if (!empty($profiler_options['profiler_id'])) {
+                // a row already exists for this agency. just update
+                $this->db2->update('UTM_PROFILER_OPTIONS', $values, 'agency_id=%i', $values['agency_id']);
+            } else {
+                // no existing row for this agency. insert a new one
+                $this->db2->insert('UTM_PROFILER_OPTIONS', $values);
+            }
+        }
+    }
+
+    public function save_extra_data_command($values) {
+        if (!empty($values['command_id'])) {
+            $command_id = $values['command_id'];
+        }
+
+        unset($values['command_id']);
+
+        if (!empty($command_id)) {
+            $this->db2->update('AGENCY_EXTRA_DATA_COMMANDS', $values, 'id=%i', $command_id);
+
+            return $command_id;
+        } else {
+            unset($values['command_id']);
+
+            if (isset($values['agency_id'])) {
+                $values['pcc'] = $this->db2->queryFirstField("SELECT SID FROM AGENCYINFO WHERE agency_id = %i", $values['agency_id']);
+                
+                $this->db2->insert('AGENCY_EXTRA_DATA_COMMANDS', $values);
+                
+                $command_id = $this->db2->insertId();
+                
+                if ($command_id) {
+                    return $command_id;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public function delete_extra_data_command($command_id) {
+        $this->db2->delete('AGENCY_EXTRA_DATA_COMMANDS', 'id=%i', $command_id);
+        
+        if ($this->db2->affectedRows()) {
+            return true;
+        }
+
+        return false;
+    }
+
+    public function get_extra_data_commands($agency_id, $command_id = 'all') {
+        if ($command_id === 'all') {
+            $commands = $this->db2->query('SELECT * FROM AGENCY_EXTRA_DATA_COMMANDS WHERE agency_id = %i', $agency_id);
+        } else {
+            $commands = $this->db2->queryFirstRow('SELECT * FROM AGENCY_EXTRA_DATA_COMMANDS WHERE id = %i', $command_id);
+        }
+
+        return $commands;
+    }
+
+    public function save_whosaway_account($values) {
+        $whosaway_id = $values['whosaway_id'];
+        
+        unset($values['whosaway_id']);
+       
+        if (!empty($whosaway_id)) {
+            $this->db2->update('ONQ_WHOSAWAY_ACCOUNTS', $values, 'whosaway_id=%i', $whosaway_id);
+          
+            return $whosaway_id;
+        } else {
+            unset($values['whosaway_id']);
+         
+            if (isset($values['agency_id'])) {
+                $this->db2->insert('ONQ_WHOSAWAY_ACCOUNTS', $values);
+             
+                $whosaway_id = $this->db2->insertId();
+              
+                if ($whosaway_id) {
+                    return $whosaway_id;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public function delete_whosaway_account($whosaway_id) {
+        $this->db2->delete('ONQ_WHOSAWAY_ACCOUNTS', 'whosaway_id=%i', $whosaway_id);
+       
+        if ($this->db2->affectedRows()) {
+            return true;
+        }
+       
+        return false;
+    }
+
+    public function get_whosaway_accounts($agency_id, $whosaway_id = 'all') {
+        if ($whosaway_id === 'all') {
+            $accounts = $this->db2->query('SELECT * FROM ONQ_WHOSAWAY_ACCOUNTS WHERE agency_id = %i', $agency_id);
+        } else {
+            $accounts = $this->db2->queryFirstRow('SELECT * FROM ONQ_WHOSAWAY_ACCOUNTS WHERE whosaway_id = %i', $whosaway_id);
+        }
+
+        return $accounts;
+    }
+
+    public function save_report_option($values) {
+        if (!empty($values['report_option_id'])) {
+            $report_option_id = $values['report_option_id'];
+        }
+
+        unset($values['report_option_id']);
+        
+        if (!empty($report_option_id)) {
+            $this->db2->update('ReportOptions', $values, 'OnViewID=%i', $report_option_id);
+        
+            return $report_option_id;
+        } else {
+            if (isset($values['AgencyID'])) {
+                $sid_and_group = $this->db2->queryFirstRow("SELECT SID, GroupID FROM AGENCYINFO WHERE agency_id = %i", $values['AgencyID']);
+                $values['SID'] = $sid_and_group['SID'];
+                $values['GroupID'] = $sid_and_group['GroupID'];
+        
+                $this->db2->insert('ReportOptions', $values);
+        
+                $report_option_id = $this->db2->insertId();
+        
+                if ($report_option_id) {
+                    return $report_option_id;
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    public function delete_report_option($report_option_id) {
+        $this->db2->delete('ReportOptions', 'OnViewID=%i', $report_option_id);
+       
+        if ($this->db2->affectedRows()) {
+            return true;
+        }
+       
+        return false;
+    }
+
+    public function get_mtcc_options_row($agency_id) {
+        return DB::queryFirstRow('SELECT * FROM ONQ_MTCC_DOC_OPTIONS WHERE agency_id = %i', $agency_id);
+    }
+
+    public function save_mtcc_options($values) {
+        if (!empty($values['agency_id']) AND is_numeric($values['agency_id'])) {
+            $mtcc_options = $this->db2->queryFirstRow('SELECT * FROM ONQ_MTCC_DOC_OPTIONS WHERE agency_id = %i', $values['agency_id']);
+       
+            if (!empty($mtcc_options['options_id'])) {
+                // a row already exists for this agency. just update
+                $this->db2->update('ONQ_MTCC_DOC_OPTIONS', $values, 'agency_id=%i', $values['agency_id']);
+            } else {
+                // no existing row for this agency. insert a new one
+                $this->db2->insert('ONQ_MTCC_DOC_OPTIONS', $values);
+            }
+        }
+    }
+
+    public function get_report_options($agency_id, $report_option_id = 'all') {
+        if ($report_option_id === 'all') {
+            $report_options = $this->db2->query('SELECT * FROM ReportOptions WHERE AgencyID = %i', $agency_id);
+        } else {
+            $report_options = $this->db2->queryFirstRow('SELECT * FROM ReportOptions WHERE OnViewID = %i', $report_option_id);
+        }
+
+        return $report_options;
+    }
+
+    public function get_ops_accounts($agency_id, $ops_account_id = 'all') {
+        if ($ops_account_id === 'all') {
+            $accounts = $this->db2->query('SELECT * FROM UTM_AMADEUS_OPS_ACCOUNTS WHERE agency_id = %i', $agency_id);
+        } else {
+            $accounts = $this->db2->queryFirstRow('SELECT * FROM UTM_AMADEUS_OPS_ACCOUNTS WHERE accounts_id = %i', $ops_account_id);
+        }
+
+        return $accounts;
+    }
+
+    public function save_ops_account($values) {
+        $account_id = $values['accounts_id'];
+        
+        unset($values['accounts_id']);
+        
+        if (!empty($account_id)) {
+            $this->db2->update('UTM_AMADEUS_OPS_ACCOUNTS', $values, 'accounts_id=%i', $account_id);
+        
+            return $account_id;
+        } else {
+            unset($values['accounts_id']);
+        
+            if (isset($values['agency_id'])) {
+                $this->db2->insert('UTM_AMADEUS_OPS_ACCOUNTS', $values);
+        
+                $account_id = $this->db2->insertId();
+        
+                if ($account_id) {
+                    return $account_id;
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    public function delete_ops_account($account_id) {
+        $this->db2->delete('UTM_AMADEUS_OPS_ACCOUNTS', 'accounts_id=%i', $account_id);
+       
+        if ($this->db2->affectedRows()) {
+            return true;
+        }
+       
+        return false;
+    }
+    
+    public function get_utm_air_fare_filters($agency_id, $filter_id = 'all') {
+        if ($filter_id === 'all') {
+            $filters = $this->db2->query('SELECT * FROM UTM_AIR_FARE_FILTERS WHERE agency_id = %i', $agency_id);
+        } else {
+            $filters = $this->db2->queryFirstRow('SELECT * FROM UTM_AIR_FARE_FILTERS WHERE filter_id = %i', $filter_id);
+        }
+       
+        return $filters;
+    }
+
+    /*
+        Modify by : Stephanie Rodriguez
+        Date : 2016-06-13
+        Ticket RFC #13493
+    */
+    public function get_all_utm_air_fare_filters($filter_ids) {
+        $filters = $this->db2->query('SELECT * FROM UTM_AIR_FARE_FILTERS WHERE filter_id IN %li', explode(',', $filter_ids));
+
+        return $filters;
+    }
+
+    public function delete_all_utm_air_fare_filter($filter_ids) {
+        $size = explode(',', $filter_ids);
+
+        if (sizeof($size) > 1) {
+            foreach (explode(',', $filter_ids) as $value) {
+                $this->db2->delete('UTM_AIR_FARE_FILTERS', 'filter_id = %i', $value);
+            }
+        } else {
+            $this->db2->delete('UTM_AIR_FARE_FILTERS', 'filter_id = %i', $filter_ids);
+        }
+
+        if ($this->db2->affectedRows() < 0) {
+            return false;
+        }
+
+        return true;
+    }
+
+    # This function is to verify if there's already a filter for taht agency
+    public function validate_if_exist($values) {
+        $json = json_decode($values['json']);
+        $agency_id = $values['agency_id'];
+        $results = array();
+
+        if (sizeof(explode(',', $agency_id)) > 1) {
+            foreach (explode(',', $agency_id) as $agency) {
+                foreach ($json as $filter) {
+                    $var = get_object_vars($filter);
+
+                    $validate = $this->db2->query("SELECT * FROM UTM_AIR_FARE_FILTERS WHERE agency_id = %i AND air_vendor = %s", $agency, $var['air_vendor']);
+                    
+                    $results[] = $validate;
+                }
+            }
+        } else {
+            foreach ($json as $filter) {
+                $var = get_object_vars($filter);
+
+                $validate = $this->db2->query("SELECT * FROM UTM_AIR_FARE_FILTERS WHERE agency_id = %i AND air_vendor = %s", $agency_id, $var['air_vendor']);
+
+                $results[] = $validate;
+            }
+        }
+
+        return $results;
+    }
+
+    public function copy_all_utm_air_fare_filter($values) {
+        $json = json_decode($values['json']);
+        $agency_id = $values['agency_id'];
+        $var = array();
+
+        $pcc_groupid_agency_id = $this->db2->query("SELECT SID, GroupID, agency_id FROM AGENCYINFO WHERE agency_id IN %li", explode(',', $agency_id));
+
+        foreach ($pcc_groupid_agency_id as $value) {
+            $var['agency_id'] = $value['agency_id'];
+            $var['pcc'] = $value['SID'];
+            $var['group_id'] = $value['GroupID'];
+            
+            foreach ($json as $filter) {
+                $v = get_object_vars($filter);
+
+                $var['air_vendor'] = $v['air_vendor'];
+                $var['filter_amount'] = $v['filter_amount'];
+                $var['xcl_filter_gds_command'] = $v['xcl_filter_gds_command'];
+                $var['xcl_filter_keyword'] = $v['xcl_filter_keyword'];
+
+                if (!empty($var['agency_id']) && !empty($var['pcc']) && !empty($var['air_vendor'])) {
+                    $this->db2->insert('UTM_AIR_FARE_FILTERS', $var);
+
+                    if ($this->db2->affectedRows() < 0) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    public function insert_update_all_utm_air_fare_filter($values) {
+        $json = json_decode($values['json']);
+        $agency_id = $values['agency_id'];
+        $results = array();
+
+        foreach (explode(',', $agency_id) as $agency) {
+            foreach ($json as $filter) {
+                $var = get_object_vars($filter);
+
+                $validate = $this->db2->query("SELECT * FROM UTM_AIR_FARE_FILTERS WHERE agency_id = %i AND air_vendor = %s", $agency, $var['air_vendor']);
+                
+                if (!empty($validate)) {
+                    $arr = array();
+                    
+                    $arr['air_vendor'] = $var['air_vendor'];
+                    $arr['filter_amount'] = $var['filter_amount'];
+                    $arr['xcl_filter_gds_command'] = $var['xcl_filter_gds_command'];
+                    $arr['xcl_filter_keyword'] = $var['xcl_filter_keyword'];
+
+                    foreach ($validate as $val) {
+                        $this->db2->update('UTM_AIR_FARE_FILTERS', $arr, 'filter_id = %i', $val['filter_id']);
+
+                        if ($this->db2->affectedRows() < 0) {
+                            return false;
+                        }
+                    }
+                } else {
+                    unset($var['filter_id']);
+                    $pcc_groupid_agency_id = $this->db2->query("SELECT SID, GroupID, agency_id FROM AGENCYINFO WHERE agency_id IN %li", explode(',', $agency_id));
+
+                    foreach ($pcc_groupid_agency_id as $a) {
+                        $var['agency_id'] = $a['agency_id'];
+                        $var['pcc'] = $a['SID'];
+                        $var['group_id'] = $a['GroupID'];
+                        
+                        $this->db2->insertUpdate('UTM_AIR_FARE_FILTERS', $var);
+
+                        if ($this->db2->affectedRows() < 0) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    public function save_utm_air_fare_filter($values) {
+        $filter_id = $values['filter_id'];
+       
+        unset($values['filter_id']);
+       
+        if (!empty($filter_id)) {
+            $this->db2->update('UTM_AIR_FARE_FILTERS', $values, 'filter_id=%i', $filter_id);
+       
+            return $filter_id;
+        } else {
+            unset($values['filter_id']);
+       
+            if (isset($values['agency_id'])) {
+                $pcc_and_group = $this->db2->queryFirstRow("SELECT SID, GroupID FROM AGENCYINFO WHERE agency_id = %i", $values['agency_id']);
+                $values['pcc'] = $pcc_and_group['SID'];
+                $values['group_id'] = $pcc_and_group['GroupID'];
+       
+                $this->db2->insert('UTM_AIR_FARE_FILTERS', $values);
+       
+                $filter_id = $this->db2->insertId();
+       
+                if ($filter_id) {
+                    return $filter_id;
+                }
+            }
+        }
+       
+        return false;
+    }
+
+    public function delete_utm_air_fare_filter($filter_id) {
+        $this->db2->delete('UTM_AIR_FARE_FILTERS', 'filter_id=%i', $filter_id);
+       
+        if ($this->db2->affectedRows()) {
+            return true;
+        }
+       
+        return false;
+    }
+}
